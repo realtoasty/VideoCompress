@@ -199,9 +199,25 @@ public class SwiftVideoCompressPlugin: NSObject, FlutterPlugin {
         
         let isIncludeAudio = includeAudio != nil ? includeAudio! : true
         
-        let session = getComposition(isIncludeAudio, timeRange, sourceVideoTrack!)
+        // toastyai fix (2026-09-12): both of these were force-unwraps that took
+        // the whole process down with EXC_BREAKPOINT. A source with no video
+        // track, or AVFoundation declining to create an export session (which
+        // it does under memory pressure — observed in the field at ~175MB
+        // free), now surfaces as a catchable FlutterError instead.
+        guard let sourceTrack = sourceVideoTrack else {
+            result(FlutterError(code: "video_compress",
+                                message: "Source has no video track",
+                                details: nil))
+            return
+        }
+        let session = getComposition(isIncludeAudio, timeRange, sourceTrack)
         
-        let exporter = AVAssetExportSession(asset: session, presetName: getExportPreset(quality))!
+        guard let exporter = AVAssetExportSession(asset: session, presetName: getExportPreset(quality)) else {
+            result(FlutterError(code: "video_compress",
+                                message: "Could not create export session (device under memory pressure?)",
+                                details: nil))
+            return
+        }
         
         exporter.outputURL = compressionUrl
         exporter.outputFileType = AVFileType.mp4
