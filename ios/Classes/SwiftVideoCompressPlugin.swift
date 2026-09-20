@@ -88,7 +88,12 @@ public class SwiftVideoCompressPlugin: NSObject, FlutterPlugin {
             guard (try? bitmap.write(to: url)) != nil else {
                 return result(FlutterError(code: channelName,message: "getFileThumbnail error",details: "getFileThumbnail error"))
             }
-            result(Utility.excludeFileProtocol(url.absoluteString))
+            // toastyai fix (2026-09-20): same defect as the compressVideo
+            // readback — excludeFileProtocol strips the scheme but never
+            // decodes, so this handed Dart a percent-encoded path that names no
+            // real file whenever the name contains a space. `url.path` is the
+            // decoded filesystem path, which is what every caller wanted.
+            result(url.path)
         }
     }
     
@@ -286,7 +291,31 @@ public class SwiftVideoCompressPlugin: NSObject, FlutterPlugin {
                     print(error)
                 }
             }
-            var json = self.getMediaInfoJson(compressionUrl.absoluteString)
+            // toastyai fix (2026-09-20, second): this passed
+            // `compressionUrl.absoluteString`, which PERCENT-ENCODES the path.
+            // Utility.excludeFileProtocol only strips the "file://" prefix, it
+            // never decodes — so a source whose name contains a space yielded a
+            // path with a literal "%20" in it, naming a file that does not
+            // exist. getTrack returned nil, getMediaInfoJson hit its
+            // `else { return [:] }`, and the Dart side crashed on `File(path!)`.
+            // Measured on macOS with the same code path: "NoSpaces_1.mp4" -> 1
+            // video track either way; "Rec 2026 1.mp4" -> 0 tracks via
+            // absoluteString, 1 via .path. Note the cancel branch above already
+            // used the decoded `path`; only this one was wrong.
+            var json = self.getMediaInfoJson(compressionUrl.path)
+            // Defence in depth, independent of the bug above: an empty dict is
+            // still valid JSON, so Dart saw a SUCCESSFUL call and then died on a
+            // null path. Never hand back a success-shaped result for an output
+            // we could not actually read. Checked before isCancel is inserted,
+            // so this tests what getMediaInfoJson returned and nothing else.
+            if json.isEmpty {
+                result(FlutterError(
+                    code: "video_compress",
+                    message: "Export completed but its output could not be read: "
+                        + compressionUrl.path,
+                    details: nil))
+                return
+            }
             json["isCancel"] = false
             let jsonString = Utility.keyValueToJson(json)
             result(jsonString)

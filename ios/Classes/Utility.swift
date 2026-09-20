@@ -42,7 +42,15 @@ class Utility: NSObject {
     
     static func deleteFile(_ path: String, clear: Bool = false) {
         let url = getPathUrl(path)
-        if fileManager.fileExists(atPath: url.absoluteString) {
+        // toastyai fix (2026-09-20): this tested `url.absoluteString`, which
+        // re-adds the "file://" scheme AND percent-encodes — neither of which a
+        // filesystem API accepts. The check therefore never passed, the
+        // removeItem below never ran, and with `clear` defaulting to false this
+        // function was a NO-OP. That matters at its compressVideo call site,
+        // where it exists to clear a stale previous export: AVAssetExportSession
+        // refuses to write to a path that already has a file, so a leftover
+        // output could fail every subsequent export of the same source.
+        if fileManager.fileExists(atPath: url.path) {
             try? fileManager.removeItem(at: url)
         }
         if clear {
