@@ -247,6 +247,32 @@ public class SwiftVideoCompressPlugin: NSObject, FlutterPlugin {
                 let jsonString = Utility.keyValueToJson(json)
                 return result(jsonString)
             }
+            // toastyai fix (2026-09-20): this handler used to probe the output
+            // and return its media info REGARDLESS of how the export ended. A
+            // failed export leaves nothing readable at that URL, so
+            // getMediaInfoJson hit its `guard let track ... else { return [:] }`
+            // and returned an EMPTY dictionary — which is still valid JSON, so
+            // the Dart side saw a successful call and MediaInfo.fromJson died on
+            // `file = File(path!)` with "Null check operator used on a null
+            // value". That error names neither the failure nor its cause, so
+            // every export failure in the field was effectively invisible: no
+            // status, no reason, no crash report, just a mystery null-check on a
+            // line that has nothing to do with exporting. Report the real thing.
+            //
+            // Ordering is deliberate. The cancel branch above owns .cancelled
+            // and must keep its isCancel contract, so this sits after it; and it
+            // returns BEFORE deleteOrigin so a failed export can never delete
+            // the source file it just failed to convert.
+            if exporter.status != .completed {
+                let reason = exporter.error?.localizedDescription
+                    ?? "no underlying NSError reported"
+                result(FlutterError(
+                    code: "video_compress",
+                    message: "Export did not complete (status "
+                        + "\(exporter.status.rawValue)): \(reason)",
+                    details: nil))
+                return
+            }
             if deleteOrigin {
                 let fileManager = FileManager.default
                 do {
