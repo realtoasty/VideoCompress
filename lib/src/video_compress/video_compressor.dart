@@ -160,6 +160,50 @@ extension Compress on IVideoCompress {
     }
   }
 
+  /// toastyai addition (iOS only): re-encode [path] as H.264 at an explicit
+  /// average [videoBitrate] (bits/s), scaled so its longest side is at most
+  /// [maxLongSide], frame rate capped at [maxFrameRate], AAC audio at
+  /// [audioBitrate]. The export presets behind [compressVideo] choose their own
+  /// bitrate, which is how a 64 s clip at 720p outgrew a 50 MB upload cap;
+  /// this lets the caller size the output to a budget instead.
+  ///
+  /// Unlike [compressVideo], failures THROW (a [PlatformException] carrying
+  /// the native reason, or [MissingPluginException] where there is no native
+  /// side) instead of returning null, so the caller can report the reason and
+  /// fall back.
+  Future<MediaInfo> compressVideoToBitrate(
+    String path, {
+    required int maxLongSide,
+    required int videoBitrate,
+    int audioBitrate = 96000,
+    double maxFrameRate = 30,
+  }) async {
+    if (isCompressing) {
+      throw StateError('''VideoCompress Error:
+      Method: compressVideoToBitrate
+      Already have a compression process, you need to wait for the process to finish or stop it''');
+    }
+    // ignore: invalid_use_of_protected_member
+    setProcessingStatus(true);
+    try {
+      final jsonStr =
+          await channel.invokeMethod<String>('compressVideoToBitrate', {
+        'path': path,
+        'maxLongSide': maxLongSide,
+        'videoBitrate': videoBitrate,
+        'audioBitrate': audioBitrate,
+        'maxFrameRate': maxFrameRate,
+      });
+      if (jsonStr == null) {
+        throw StateError('compressVideoToBitrate returned nothing');
+      }
+      return MediaInfo.fromJson(json.decode(jsonStr));
+    } finally {
+      // ignore: invalid_use_of_protected_member
+      setProcessingStatus(false);
+    }
+  }
+
   /// stop compressing the file that is currently being compressed.
   /// If there is no compression process, nothing will happen.
   Future<void> cancelCompression() async {

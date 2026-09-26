@@ -4,6 +4,7 @@ import AVFoundation
 public class SwiftVideoCompressPlugin: NSObject, FlutterPlugin {
     private let channelName = "video_compress"
     private var exporter: AVAssetExportSession? = nil
+    private var transcoder: BitrateTranscoder? = nil
     private var stopCommand = false
     private let channel: FlutterMethodChannel
     private let avController = AvController()
@@ -44,6 +45,23 @@ public class SwiftVideoCompressPlugin: NSObject, FlutterPlugin {
             let frameRate = args!["frameRate"] as? Int
             compressVideo(path, quality, deleteOrigin, startTime, duration, includeAudio,
                           frameRate, result)
+        case "compressVideoToBitrate":
+            guard let path = args?["path"] as? String,
+                  let maxLongSide = args?["maxLongSide"] as? Int,
+                  let videoBitrate = args?["videoBitrate"] as? Int else {
+                result(FlutterError(code: channelName,
+                                    message: "compressVideoToBitrate: missing arguments",
+                                    details: nil))
+                return
+            }
+            compressVideoToBitrate(
+                path,
+                BitrateTranscoder.Settings(
+                    maxLongSide: maxLongSide,
+                    videoBitrate: videoBitrate,
+                    audioBitrate: args?["audioBitrate"] as? Int ?? 96_000,
+                    maxFrameRate: args?["maxFrameRate"] as? Double ?? 30),
+                result)
         case "cancelCompression":
             cancelCompression(result)
         case "deleteAllCache":
@@ -322,8 +340,60 @@ public class SwiftVideoCompressPlugin: NSObject, FlutterPlugin {
         })
     }
     
+    /// toastyai addition (2026-09-26): the bitrate-targeted path — see
+    /// BitrateTranscoder. Same output location and result shape as
+    /// compressVideo (media info JSON of the output), so the Dart side reads
+    /// both the same way; failures are FlutterErrors naming the real reason.
+    private func compressVideoToBitrate(_ path: String,
+                                        _ settings: BitrateTranscoder.Settings,
+                                        _ result: @escaping FlutterResult) {
+        let source = Utility.getPathUrl(path)
+        let destination = Utility.getPathUrl(
+            "\(Utility.basePath())/\(Utility.getFileName(path)).mp4")
+        let transcoder = BitrateTranscoder()
+        self.transcoder = transcoder
+        stopCommand = false
+        transcoder.transcode(
+            source: source, destination: destination, settings: settings,
+            progress: { p in
+                DispatchQueue.main.async {
+                    if !self.stopCommand {
+                        self.channel.invokeMethod("updateProgress",
+                                                  arguments: "\(p * 100)")
+                    }
+                }
+            },
+            completion: { outcome in
+                DispatchQueue.main.async {
+                    self.transcoder = nil
+                    switch outcome {
+                    case .failure(let failure):
+                        self.stopCommand = false
+                        result(FlutterError(code: "video_compress",
+                                            message: failure.description,
+                                            details: nil))
+                    case .success:
+                        // .path, never .absoluteString: see the percent-encoding
+                        // note in compressVideo.
+                        var json = self.getMediaInfoJson(destination.path)
+                        if json.isEmpty {
+                            result(FlutterError(
+                                code: "video_compress",
+                                message: "Transcode completed but its output could not be read: "
+                                    + destination.path,
+                                details: nil))
+                            return
+                        }
+                        json["isCancel"] = false
+                        result(Utility.keyValueToJson(json))
+                    }
+                }
+            })
+    }
+
     private func cancelCompression(_ result: FlutterResult) {
         exporter?.cancelExport()
+        transcoder?.cancel()
         stopCommand = true
         result("")
     }
